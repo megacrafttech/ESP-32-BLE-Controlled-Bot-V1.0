@@ -23,5 +23,3 @@ The cart uses an H-Bridge motor driver to drive two DC motors, while the Flutter
 - Chassis and caster wheel  
 
 ---
-
-## 📂 Project Structure
