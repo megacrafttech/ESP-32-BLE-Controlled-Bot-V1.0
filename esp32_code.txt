@@ -1,0 +1,119 @@
+/*
+  ESP32 BLE UART (Nordic UART Service) for Flutter app "bleesp32"
+  - Library: NimBLE-Arduino (by h2zero)
+  - Advertises as "bleesp32" (name included in ADV + SCAN_RSP)
+  - UUIDs:
+      Service: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
+      RX Char (Write): 6E400002-B5A3-F393-E0A9-E50E24DCCA9E
+      TX Char (Notify): 6E400003-B5A3-F393-E0A9-E50E24DCCA9E
+  - Commands: LED_ON, LED_OFF, STATUS
+*/
+
+#include <NimBLEDevice.h>
+
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2
+#endif
+
+#define DEVICE_NAME "bleesp32"
+
+// NUS UUIDs
+static NimBLEUUID NUS_SERVICE("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
+static NimBLEUUID NUS_RX_CHAR("6E400002-B5A3-F393-E0A9-E50E24DCCA9E"); // Write / WriteNR
+static NimBLEUUID NUS_TX_CHAR("6E400003-B5A3-F393-E0A9-E50E24DCCA9E"); // Notify
+
+NimBLEServer* pServer = nullptr;
+NimBLECharacteristic* pTxChar = nullptr;
+
+static void sendLine(const String& s) {
+  if (!pTxChar) return;
+  pTxChar->setValue((s + "\n").c_str());
+  pTxChar->notify();
+}
+
+// Characteristic callbacks (NimBLE-Arduino uses NimBLEConnInfo&)
+class RxCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+    std::string raw = pCharacteristic->getValue();
+    String cmd = String(raw.c_str());
+    cmd.trim();
+
+    if (cmd.equalsIgnoreCase("LED_ON")) {
+      digitalWrite(LED_BUILTIN, HIGH);
+      sendLine("OK: LED ON");
+    } else if (cmd.equalsIgnoreCase("LED_OFF")) {
+      digitalWrite(LED_BUILTIN, LOW);
+      sendLine("OK: LED OFF");
+    } else if (cmd.equalsIgnoreCase("STATUS")) {
+      sendLine(String("LED=") + (digitalRead(LED_BUILTIN) ? "ON" : "OFF"));
+    } else if (cmd.length() > 0) {
+      sendLine(String("ERR: Unknown cmd '") + cmd + "'");
+    }
+  }
+};
+
+// Server callbacks (with NimBLEConnInfo&)
+class ServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* s, NimBLEConnInfo& connInfo) override {
+    Serial.println("[BLE] Client connected");
+  }
+  void onDisconnect(NimBLEServer* s, NimBLEConnInfo& connInfo, int reason) override {
+    Serial.print("[BLE] Client disconnected, reason=");
+    Serial.println(reason);
+    NimBLEDevice::startAdvertising();
+  }
+};
+
+void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+
+  Serial.begin(115200);
+  delay(200);
+  Serial.println("\n=== bleesp32: ESP32 BLE UART (NUS) ===");
+
+  // Init BLE + set the GAP device name
+  NimBLEDevice::init(DEVICE_NAME);
+  NimBLEDevice::setDeviceName(DEVICE_NAME);            // ensure GAP name is set
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);              // strong radio
+  NimBLEDevice::setSecurityAuth(false, false, true);   // no bonding required
+
+  // Server + service
+  pServer = NimBLEDevice::createServer();
+  pServer->setCallbacks(new ServerCallbacks());
+
+  NimBLEService* pService = pServer->createService(NUS_SERVICE);
+
+  // TX (notify)
+  pTxChar = pService->createCharacteristic(NUS_TX_CHAR, NIMBLE_PROPERTY::NOTIFY);
+
+  // RX (write / write without response)
+  NimBLECharacteristic* pRxChar =
+      pService->createCharacteristic(NUS_RX_CHAR, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  pRxChar->setCallbacks(new RxCallbacks());
+
+  pService->start();
+
+  // --- Advertising with explicit device name in both ADV and SCAN_RSP ---
+  NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();
+
+  // Build primary advertisement data
+  NimBLEAdvertisementData advData;
+  advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+  advData.setName(DEVICE_NAME);           // name in primary ADV
+  advData.addServiceUUID(NUS_SERVICE);    // advertise service UUID
+  pAdv->setAdvertisementData(advData);
+
+  // Build scan response data (also include name for compatibility)
+  NimBLEAdvertisementData scanData;
+  scanData.setName(DEVICE_NAME);          // name in scan response too
+  pAdv->setScanResponseData(scanData);
+
+  // Start advertising
+  NimBLEDevice::startAdvertising();
+  Serial.println("[BLE] Advertising NUS as 'bleesp32' with name in ADV+SCAN_RSP…");
+}
+
+void loop() {
+  // Event-driven; nothing needed here.
+}
